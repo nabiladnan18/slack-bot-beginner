@@ -31,7 +31,7 @@ class WelcomeMessage:
     def __init__(self, channel, user) -> None:
         self.channel = channel
         self.user = user
-        self.icon_emoji = ":robot_face:"
+        # self.icon_emoji = ":robot_face:"
         self.timestamp = ""
         self.completed = False
 
@@ -96,6 +96,31 @@ def send_welcome_message(channel, user):
     if channel not in welcome_messages:
         welcome_messages[channel] = {}
     welcome_messages[channel][user] = welcome
+
+
+@slack_event_adapter.on("reaction_added")
+def reaction(payload):
+    # print(payload)
+    event = payload.get("event", {})
+    channel_id = event.get("item", {}).get("channel")
+    user_id = event.get("user")
+    # text = event["text"]
+
+    if f"@{user_id}" not in welcome_messages:
+        return
+
+    welcome = welcome_messages[f"@{user_id}"][user_id]
+    welcome.completed = True
+    # * The channel ID needs updating here
+    # * This is because to send a DM we can use @USER_ID
+    # * However when we react, there is a new CHANNEL_ID 😕
+    # * which starts with `D` and then some text which is NOT USER_ID
+    # * IDK why tf that happens, aber das passiert halt 🤷‍♂️
+    # * So we update the channel_id we get from the payload for the message
+    welcome.channel = channel_id
+    message = welcome.get_message()
+    updated_message = client.chat_update(**message)
+    welcome.timestamp = updated_message["ts"]
 
 
 @app.route("/message-count", methods=["POST"])
