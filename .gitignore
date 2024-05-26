@@ -163,6 +163,3 @@ cython_debug/
 
 # VSCODE
 .vscode/
-
-# Project-specific
-sample_outputs/
