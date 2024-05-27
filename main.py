@@ -1,7 +1,9 @@
 import os
+from time import thread_time
 import slack
 from flask import Flask, request, Response
 from slackeventsapi import SlackEventAdapter
+import string
 
 app = Flask(__name__)
 app.secret_key = os.environ["SECRET_KEY"]
@@ -14,6 +16,15 @@ BOT_ID = client.api_call("auth.test")["user_id"]
 
 message_counts = {}
 welcome_messages = {}
+
+BAD_WORDS = ["hmm", "no", "nabil"]
+
+
+def check_if_bad_word(message):
+    message = message.lower()
+    message = message.translate(str.maketrans("", "", string.punctuation))
+
+    return any(word in message for word in BAD_WORDS)
 
 
 class WelcomeMessage:
@@ -73,7 +84,7 @@ class WelcomeMessage:
 @slack_event_adapter.on("message")
 def message(payload: dict):
     event = payload.get("event", {})
-    channel_id = event["channel"]
+    channel_id = event.get("channel")
     user_id = event.get("user")
     text = event["text"]
     if user_id is not None and user_id != BOT_ID:
@@ -85,16 +96,29 @@ def message(payload: dict):
         if text.lower() == "start":
             # send_welcome_message(channel_id, user_id) --> Sends message to channel
             send_welcome_message(f"@{user_id}", user_id)
+        elif check_if_bad_word(text):
+            ts = event.get("ts")
+            client.chat_postMessage(
+                channel=channel_id, thread_ts=ts, text="Whoa! That's a bad word!"
+            )
+            # client.chat_delete(channel=channel_id, ts=ts)
+            # This only works with Enterprise
+            # and User Token Scopes have to be added
+            # Bot token scope cannot handle this
 
 
 def send_welcome_message(channel, user):
+    if channel not in welcome_messages:
+        welcome_messages[channel] = {}
+
+    if user in welcome_messages[channel]:
+        return
+
     welcome = WelcomeMessage(channel, user)
     message = welcome.get_message()
     response = client.chat_postMessage(**message)
-    welcome.timestamp = response["ts"]
+    welcome.timestamp = response.get("ts")
 
-    if channel not in welcome_messages:
-        welcome_messages[channel] = {}
     welcome_messages[channel][user] = welcome
 
 
@@ -109,7 +133,7 @@ def reaction(payload):
     if f"@{user_id}" not in welcome_messages:
         return
 
-    welcome = welcome_messages[f"@{user_id}"][user_id]
+    welcome: WelcomeMessage = welcome_messages[f"@{user_id}"][user_id]
     welcome.completed = True
     # * The channel ID needs updating here
     # * This is because to send a DM we can use @USER_ID
@@ -120,7 +144,7 @@ def reaction(payload):
     welcome.channel = channel_id
     message = welcome.get_message()
     updated_message = client.chat_update(**message)
-    welcome.timestamp = updated_message["ts"]
+    welcome.timestamp = updated_message.get("ts")
 
 
 @app.route("/message-count", methods=["POST"])
