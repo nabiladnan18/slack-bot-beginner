@@ -1,23 +1,32 @@
 import os
-from time import thread_time
-import slack
-from flask import Flask, request, Response
-from slackeventsapi import SlackEventAdapter
+from venv import logger
+from slack_bolt import App
+from slack_bolt.adapter.socket_mode import SocketModeHandler
 import string
+from datetime import datetime, timedelta
+import logging
 
-app = Flask(__name__)
-app.secret_key = os.environ["SECRET_KEY"]
-slack_event_adapter = SlackEventAdapter(
-    os.environ["SIGNING_SECRET"], "/slack/events", app
-)
+logging.basicConfig(level=logging.DEBUG)
 
-client = slack.WebClient(token=os.environ["SLACK_BOT_TOKEN"])
-BOT_ID = client.api_call("auth.test")["user_id"]
+app = App(token=os.environ["SLACK_BOT_TOKEN"])
 
+# region
 message_counts = {}
 welcome_messages = {}
 
 BAD_WORDS = ["hmm", "no", "nabil"]
+# SCHEDULED_MESSAGES = [
+#     {
+#         "text": "First message",
+#         "post_at": (datetime.now() + timedelta(seconds=40)).timestamp(),
+#         "channel": "C0754PPGDLK",
+#     },
+#     {
+#         "text": "Second message",
+#         "post_at": (datetime.now() + timedelta(seconds=50)).timestamp(),
+#         "channel": "C0754PPGDLK",
+#     },
+# ]
 
 
 def check_if_bad_word(message):
@@ -68,43 +77,17 @@ class WelcomeMessage:
         return {"type": "section", "text": {"type": "mrkdwn", "text": text}}
 
 
-# Test sending message
-# client.chat_postMessage(channel="#test", text="Hello!")
-
-
-# Message event
-# https://api.slack.com/events/message
-# {
-# 	"type": "message",
-# 	"channel": "C123ABC456",
-# 	"user": "U123ABC456",
-# 	"text": "Hello world",
-# 	"ts": "1355517523.000005"
-# }
-@slack_event_adapter.on("message")
-def message(payload: dict):
-    event = payload.get("event", {})
-    channel_id = event.get("channel")
-    user_id = event.get("user")
-    text = event["text"]
-    if user_id is not None and user_id != BOT_ID:
-        if user_id in message_counts:
-            message_counts[user_id] += 1
-        else:
-            message_counts[user_id] = 1
-        # client.chat_postMessage(channel=channel_id, text=text)
-        if text.lower() == "start":
-            # send_welcome_message(channel_id, user_id) --> Sends message to channel
-            send_welcome_message(f"@{user_id}", user_id)
-        elif check_if_bad_word(text):
-            ts = event.get("ts")
-            client.chat_postMessage(
-                channel=channel_id, thread_ts=ts, text="Whoa! That's a bad word!"
-            )
-            # client.chat_delete(channel=channel_id, ts=ts)
-            # This only works with Enterprise
-            # and User Token Scopes have to be added
-            # Bot token scope cannot handle this
+@app.event("message")
+def eval_message(payload: dict, say):
+    # It is possible to also get the whole event by using event argument
+    # whole event == sample events
+    # The "payload" argument just gives the event itself as in
+    # the "event" array in the sample
+    thread_ts = payload["ts"]
+    user_id = payload["user"]
+    text = payload["text"]
+    if text.lower() == "start":
+        send_welcome_message(f"@{user_id}", user_id)
 
 
 def send_welcome_message(channel, user):
@@ -116,18 +99,37 @@ def send_welcome_message(channel, user):
 
     welcome = WelcomeMessage(channel, user)
     message = welcome.get_message()
-    response = client.chat_postMessage(**message)
+    response = app.client.chat_postMessage(**message)
     welcome.timestamp = response.get("ts")
 
     welcome_messages[channel][user] = welcome
 
 
-@slack_event_adapter.on("reaction_added")
+# def schedule_messages(messages):
+#     ids = []
+#     for msg in messages:
+#         try:
+#             response = client.chat_postMessage(
+#                 channel=msg["channel"], text=msg["text"], post_at=msg["post_at"]
+#             )
+#             if response.get("ok"):
+#                 logging.debug("Sent")
+#                 ids.append(response["id"])
+#             else:
+#                 logging.error(f"Failed {response["id"]}")
+#         except slack.errors.SlackApiError as e:
+#             logging.error(f"API Error {str(e.response["error"])}")
+#     return ids
+
+
+@app.event("reaction_added")
 def reaction(payload):
     # print(payload)
-    event = payload.get("event", {})
-    channel_id = event.get("item", {}).get("channel")
-    user_id = event.get("user")
+    logger.debug(payload)
+    # event = payload["event"]
+    channel = payload["item"]["channel"]
+    thread_ts = payload["item"]["ts"]
+    user_id = payload["user"]
     # text = event["text"]
 
     if f"@{user_id}" not in welcome_messages:
@@ -141,26 +143,49 @@ def reaction(payload):
     # * which starts with `D` and then some text which is NOT USER_ID
     # * IDK why tf that happens, aber das passiert halt 🤷‍♂️
     # * So we update the channel_id we get from the payload for the message
-    welcome.channel = channel_id
+    welcome.channel = channel
     message = welcome.get_message()
-    updated_message = client.chat_update(**message)
+    updated_message = app.client.chat_update(**message)
     welcome.timestamp = updated_message.get("ts")
 
 
-@app.route("/message-count", methods=["POST"])
-def message_count():
-    data = request.form
-    # print(data)
-    user_id = data["user_id"]
-    channel_id = data["channel_id"]
-    message_count = message_counts.get(user_id, 0)
-    client.chat_postMessage(
-        channel=channel_id, text=f"You have sent {message_count} message(s)"
-    )
-    return (Response(), 200)
+# @app.route("/message-count", methods=["POST"])
+# def message_count():
+#     data = request.form
+#     # print(data)
+#     user_id = data["user_id"]
+#     channel_id = data["channel_id"]
+#     message_count = message_counts.get(user_id, 0)
+#     client.chat_postMessage(
+#         channel=channel_id, text=f"You have sent {message_count} message(s)"
+#     )
+#     return (Response(), 200)
 
 
 # @slack_event_adapter.on("team-join") --> CHECK THIS LATER!
+# endregion
+@app.message(":wave:")
+def say_hello(message, say):
+    user = message["user"]
+    say(f"Hi there, <@{user}>!")
+
+
+@app.message("knock knock")
+def ask_who(message, say):
+    say("_Who's there?_")
+
+
+@app.event("message")
+def check_bad_words(body, say):
+    logger.debug(body)
+    event = body["event"]
+    thread_ts = event.get("thread_ts", event["ts"])
+
+    if check_if_bad_word(event["text"]):
+        say(text="You can't say that!", thread_ts=thread_ts)
+
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    # schedule_messages(SCHEDULED_MESSAGES)
+    handler = SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"])
+    handler.start()
